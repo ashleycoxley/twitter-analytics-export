@@ -4,24 +4,68 @@ import time
 import json
 import datetime
 import urllib
-import os
-import logging
 import cStringIO
 import codecs
-import pytz
-import urlparse
-import httplib
 import csv
+import argparse
+import os
 
 
-def get_date_range(no_days):
+def twitter_flow(USERNAME, PASSWORD, ANALYTICS_ACCOUNT, NUM_DAYS, OUTPUT_DIRECTORY):
+    user_agent = {'User-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.157 Safari/537.36'}
+    session = twitter_login(USERNAME, PASSWORD, user_agent)
+    start_time, end_time = get_date_range(NUM_DAYS)
+    data_string = get_tweet_data(session, ANALYTICS_ACCOUNT, start_time, end_time, user_agent)
+
+    split_data = format_data(data_string)
+    outfile = get_filename(OUTPUT_DIRECTORY, start_time, end_time)
+    
+    with open(outfile, 'w') as f:
+        writer = UnicodeWriter(f)
+        for line in split_data:
+            writer.writerow(line)
+
+    print "CSV downloaded: ", outfile
+
+
+def twitter_login(user, pw, user_agent):
+    """Start a requests session and login to Twitter with credentials.
+    Returned object is logged-in session."""
+    
+    tw_url = "https://twitter.com/"
+    session = requests.session()
+    first_req = session.get(tw_url)
+
+    auth_token_str = re.search(r'<input type="hidden" value="([a-zA-Z0-9]*)" name="authenticity_token"\>',
+          first_req.text)
+    authenticity_token = auth_token_str.group(1)
+
+    login_url = 'https://twitter.com/sessions'
+    
+    payload = {
+        'session[username_or_email]' : user,
+        'session[password]' : pw,
+        'remember_me' : '1',
+        'return_to_ssl' : 'true',
+        'scribe_log' : None,
+        'redirect_after_login':'/',
+        'authenticity_token': authenticity_token
+    }
+
+    login_req = session.post(login_url, data=payload, headers=user_agent)
+    print "login_req response: ", login_req.status_code
+
+    return session
+
+
+def get_date_range(num_days):
     """Return date strings in UTC format. The data is returned as 
     (start, end)
-    with the end date being today and the begin date being 'no_days' prior.
+    with the end date being today and the begin date being 'num_days' prior.
     Twitter's maximum total days is 90."""
 
     today = datetime.datetime.utcnow()
-    prior = today - datetime.timedelta(days=no_days)
+    prior = today - datetime.timedelta(days=num_days)
 
     def add_milliseconds(timestamp): # arbitrary since millisecond precision not necessary
         milli_ts = int(time.mktime(timestamp.timetuple()) * 1000)
@@ -35,13 +79,13 @@ def get_date_range(no_days):
 
 
 
-def get_tweet_data(session, start_time, end_time, user_agent):
+def get_tweet_data(session, analytics_account, start_time, end_time, user_agent):
     """Complete the process behind clicking 'Export data' at 
     https://analytics.twitter.com/user/USERNAME/tweets
     Data is returned as a raw string containing comma-separated data"""
 
-    export_url = "https://analytics.twitter.com/user/USERNAME/tweets/export.json"
-    bundle_url = "https://analytics.twitter.com/user/USERNAME/tweets/bundle"
+    export_url = "https://analytics.twitter.com/user/" + analytics_account + "/tweets/export.json"
+    bundle_url = "https://analytics.twitter.com/user/" + analytics_account + "/tweets/bundle"
 
     export_data = {
         'start_time' : end_time,
@@ -80,10 +124,10 @@ def format_data(data_string):
     return split_data
 
 
-def get_filename(f_path, start_time, end_time):
+def get_filename(output_dir, start_time, end_time):
     """Build descriptive filename for CSV"""
     f_name = 'twitter_data_' + start_time + '_' + end_time + '.csv'
-    full_path = f_path + f_name
+    full_path = output_dir + '/' + f_name
 
     return full_path
 
@@ -121,47 +165,23 @@ class UnicodeWriter: # grabbed from Python's csv module docs
 
 
 if __name__ == '__main__':
-    # variables
-    user = 'USERNAME'
-    pw = 'PASSWORD'
-    no_days = 60
-    f_path = '/path/to/desired/csv_directory/'
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-u', help="Twitter handle for login", required=True)
+    parser.add_argument('-p', help="Password", required=True)
+    parser.add_argument('-d', help="Number of previous days' data to return (max: 90)", type=int, default=60)
+    parser.add_argument('-o', help="Output directory", default=os.getcwd())
+    parser.add_argument('-a', help="Account to return data for (default: -u)", required=False)
+    args = parser.parse_args()
 
-    tw_url = "https://twitter.com/"
-    session = requests.session()
-    first_req = session.get(tw_url)
-
-    auth_token_str = re.search(r'<input type="hidden" value="([a-zA-Z0-9]*)" name="authenticity_token"\>',
-          first_req.text)
-    authenticity_token = auth_token_str.group(1)
-
-    login_url = 'https://twitter.com/sessions'
-    user_agent = {'User-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.157 Safari/537.36'}
+    USERNAME = args.u    
+    PASSWORD = args.p
+    if args.a is not None: # default account for analytics is login account
+        ANALYTICS_ACCOUNT = args.a
+    else:
+        ANALYTICS_ACCOUNT = USERNAME
+    NUM_DAYS = args.d
+    OUTPUT_DIRECTORY = args.o
     
-    payload = {
-        'session[username_or_email]' : user,
-        'session[password]' : pw,
-        'remember_me' : '1',
-        'return_to_ssl' : 'true',
-        'scribe_log' : None,
-        'redirect_after_login':'/',
-        'authenticity_token': authenticity_token
-    }
-
-    login_req = session.post(login_url, data=payload, headers=user_agent)
-    print "login_req response: ", login_req.status_code
-
-    start_time, end_time = get_date_range(no_days)
-    data_string = get_tweet_data(session, start_time, end_time, user_agent)
-
-    split_data = format_data(data_string)
-    outfile = get_filename(f_path, start_time, end_time)
-    
-    with open(outfile, 'w') as f:
-        writer = UnicodeWriter(f)
-        for line in split_data:
-            writer.writerow(line)
-
-    print "CSV downloaded: ", outfile
+    twitter_flow(USERNAME, PASSWORD, ANALYTICS_ACCOUNT, NUM_DAYS, OUTPUT_DIRECTORY)
 
 
